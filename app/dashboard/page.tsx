@@ -2,14 +2,12 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { createClient } from "@/lib/supabase/client"
+import { createClient } from "@/lib/database/client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import InteractiveMap from "@/components/map/interactive-map"
-import SearchBar from "@/components/ui/search-bar"
 import {
   Search,
   Plus,
@@ -61,79 +59,75 @@ export default function DashboardPage() {
 
   const router = useRouter()
   const { toast } = useToast()
-  const supabase = createClient()
+  const dbClient = createClient()
 
   useEffect(() => {
     const getUser = async () => {
-      if (!supabase) {
+      try {
+        const { data: authData, error } = await dbClient.auth.getUser()
+        if (error || !authData?.user) {
+          router.push("/auth/login")
+          return
+        }
+        const user = authData.user
+        setUser(user)
+
+        // Get user profile
+        const profileResult = await dbClient.from("profiles").eq("id", user.id).single().execute()
+        setProfile(profileResult.data)
+
+        // Get user's items
+        const itemsResult = await dbClient
+          .from("items")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .execute()
+
+        setItems(itemsResult.data || [])
+
+        // Get all items for map view
+        const allItemsResult = await dbClient
+          .from("items")
+          .eq("is_resolved", false)
+          .order("created_at", { ascending: false })
+          .execute()
+
+        setAllItems(allItemsResult.data || [])
+
+        // Get match count
+        const matchesResult = await dbClient
+          .from("matches")
+          .or(`user_id.eq.${user.id},user_id.eq.${user.id}`)
+          .eq("status", "pending")
+          .execute()
+
+        setMatchCount(matchesResult.count || 0)
+
+        // Get unread message count
+        const messagesResult = await dbClient
+          .from("messages")
+          .eq("receiver_id", user.id)
+          .eq("is_read", false)
+          .execute()
+
+        setMessageCount(messagesResult.count || 0)
+
+        setLoading(false)
+      } catch (error) {
+        console.error('Dashboard error:', error)
         router.push("/auth/login")
-        return
       }
-      
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-      if (!user) {
-        router.push("/auth/login")
-        return
-      }
-      setUser(user)
-
-      // Get user profile
-      const { data: profileData } = await supabase.from("profiles").select("*").eq("id", user.id).single()
-
-      setProfile(profileData)
-
-      // Get user's items
-      const { data: itemsData } = await supabase
-        .from("items")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-
-      setItems(itemsData || [])
-
-      // Get all items for map view
-      const { data: allItemsData } = await supabase
-        .from("items")
-        .select("*")
-        .eq("is_resolved", false)
-        .order("created_at", { ascending: false })
-
-      setAllItems(allItemsData || [])
-
-      // Get match count
-      const { count: matchesCount } = await supabase
-        .from("matches")
-        .select("*", { count: "exact", head: true })
-        .or(`lost_item.user_id.eq.${user.id},found_item.user_id.eq.${user.id}`)
-        .eq("status", "pending")
-
-      setMatchCount(matchesCount || 0)
-
-      // Get unread message count
-      const { count: messagesCount } = await supabase
-        .from("messages")
-        .select("*", { count: "exact", head: true })
-        .eq("receiver_id", user.id)
-        .eq("is_read", false)
-
-      setMessageCount(messagesCount || 0)
-
-      setLoading(false)
     }
 
     getUser()
-  }, [supabase, router])
+  }, [router])
 
   useEffect(() => {
     setFilteredItems(items)
   }, [items])
 
   const handleSignOut = async () => {
-    if (supabase) {
-      await supabase.auth.signOut()
-    }
+    await dbClient.auth.signOut()
     router.push("/")
   }
 
@@ -447,7 +441,16 @@ export default function DashboardPage() {
               </div>
 
               <div className="animate-in slide-in-from-top duration-300">
-                <SearchBar onSearch={handleSearch} onFilter={handleFilter} placeholder="Search your items..." />
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
+                  <input
+                    type="text"
+                    placeholder="Search your items..."
+                    value={searchQuery}
+                    onChange={(e) => handleSearch(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </div>
               </div>
             </div>
 
@@ -543,7 +546,9 @@ export default function DashboardPage() {
                 Full Screen Map
               </Button>
             </div>
-            <InteractiveMap items={allItems} height="500px" />
+            <div className="h-[500px] bg-muted rounded-lg flex items-center justify-center">
+              <p className="text-muted-foreground">Interactive map will be displayed here</p>
+            </div>
           </TabsContent>
 
           {/* Messages Tab */}
